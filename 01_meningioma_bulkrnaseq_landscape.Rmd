@@ -1,0 +1,285 @@
+---
+title: "Analyzing data from the Meningioma landscape"
+author: "Sonali Arora"
+date: "August 26, 2024"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+We downloaded the data from Thirimane et al and processed the cluster A and 
+cluster B samples
+
+## UMAP visualization
+
+```{r}
+
+rm(list=ls())
+
+setwd("~/HollandLabShared/Sonali/Frank/Ben_Men1_vgll4_2023_rnaseq_human")
+
+umap_data = read.csv("Output_VSTcounts/1298_umap2d_vst.csv")
+umap_data$UMAP2_2D = umap_data$UMAP2_2D * -1
+
+vst = read.csv("Output_VSTcounts/batchcor_vstcounts_1298.csv", row.names=1, check.names = FALSE)
+
+identical(colnames(vst),umap_data$coordinate_ID)
+library(dplyr)
+sample_info <-readxl::read_xlsx("DAM_data_clinical_patient_v40_20230808a.xlsx", skip = 5)
+sample_info <- sample_info[-1, ]
+sample_info_2 <- sample_info[match(umap_data$coordinate_ID, sample_info$coordinate_ID), ]
+finalDf2 = left_join(umap_data, sample_info_2,by="coordinate_ID" )
+
+identical(colnames(vst),finalDf2$coordinate_ID)
+
+## plot1 : functional clustering
+mat = umap_data
+mat$UMAP2_2D = mat$UMAP2_2D * -1
+identical(mat$coordinate_ID, colnames(vst))
+
+Bad <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterA_VST.csv", 
+                check.names = F, nrow = 10)
+Good  <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterB_VST.csv", 
+                  check.names=F, nrow =10)
+cluster_C <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterC_VST.csv", 
+                      check.names = F, nrow = 10)
+cluster_D  <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterD_VST.csv", 
+                       check.names=F, nrow =10)
+A_idx = na.omit(match(colnames(Bad), colnames(vst)))
+B_idx = na.omit(match(colnames(Good), colnames(vst)))
+C_idx = na.omit(match(colnames(cluster_C), colnames(vst)))
+D_idx = na.omit(match(colnames(cluster_D), colnames(vst)))
+mat$VST_CLUSTER = rep("Not Available", nrow(mat))
+mat$VST_CLUSTER[A_idx] = "A"
+mat$VST_CLUSTER[B_idx] = "B"
+mat$VST_CLUSTER[C_idx] = "NF2 wild type"
+mat$VST_CLUSTER[D_idx] = "NF2 wild type"
+
+mat$CLUSTER = factor(mat$VST_CLUSTER, 
+                       levels = c("A", "B", "NF2 wild type", "Not Available" ))
+mat= mat[order(mat$VST_CLUSTER, decreasing=T) , ]
+fig1 = ggplot( mat ,
+               aes( x = UMAP1_2D, y = UMAP2_2D, color =  VST_CLUSTER )) +
+    geom_point(size=2) +
+    theme_bw() +
+    ggtitle("Functional Clustering")  +
+    scale_color_manual(values = c('A' = "red", 
+                                  'B' = "#DDCC77", 'NF2 wild type' = "#332288",  
+                                  "Not Available" = "grey80"))
+## plot 2: NF2 status
+
+mat$NF2_ISSUE = factor(mat$NF2_ISSUE, 
+                       levels = c("yes", "no",   "Not Available"))
+mat= mat[order(mat$NF2_ISSUE, decreasing=T) , ]
+fig4 = ggplot( mat ,
+               aes( x = UMAP1_2D, y = UMAP2_2D, color =  NF2_ISSUE )) +
+    geom_point(size=2) +
+    theme_bw() +
+    ggtitle("NF2 Status")  +
+    scale_color_manual(values = c('yes' = "blue", 'no' = "orange",
+                                  "Not Available" = "grey80"))
+# plot 3: color by WHO grade
+
+mat$WHO_GRADE = factor(mat$WHO_GRADE, 
+       levels = c("WHO 3", "WHO 2", "WHO 1",  "Not Available"))
+mat= mat[order(mat$WHO_GRADE, decreasing=T) , ]
+fig3 =  ggplot(mat,
+               aes(UMAP1_2D, UMAP2_2D, color=WHO_GRADE )) +
+    geom_point(size=2) + 
+    ggtitle(paste0( "WHO_GRADE")) + 
+    scale_color_manual(values = c( "darkred",  "orange","#44AA99" ,"grey80"), 
+                       labels = levels(mat$WHO_GRADE) )+
+    theme_bw()
+
+
+```
+
+## Differential expression analysis 
+
+```{r}
+
+rm(list=ls())
+
+library(RColorBrewer)
+library(ggplot2)
+myPalette <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))
+
+
+gene_exp  = readRDS(file.path( "1298_combatseq_rawcounts.rds"))
+Bad <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterA_VST.csv", check.names = F, nrow = 10)
+Good  <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterB_VST.csv", check.names=F, nrow =10)
+
+bad_idx = na.omit(match(colnames(Bad), colnames(gene_exp)))
+good_idx = na.omit(match(colnames(Good), colnames(gene_exp)))
+
+bad_gene = gene_exp[, bad_idx]
+good_gene = gene_exp[, good_idx]
+raw_data = cbind(bad_gene, good_gene)
+
+coldata = data.frame(sampleName = colnames(raw_data), 
+                     sampleType = c(  rep("Bad", length(bad_idx)), 
+                                      rep("good", length(good_idx)) ))
+coldata$sampleType = factor(coldata$sampleType, levels = c("Bad" , "good"))
+rownames(coldata) = colnames(raw_data)
+library(DESeq2)
+
+dds2 <- DESeqDataSetFromMatrix(countData = raw_data, 
+                               colData = coldata, design = ~ sampleType)
+dds2 <- estimateSizeFactors(dds2)
+idx <- which(rowSums(counts(dds2 ))<=10) # 4909
+
+dds2 = dds2[-idx, ]
+dds2= DESeq(dds2)
+
+fc = 1.5
+test = "Bad" # bad ones overexpress VGLL4 - 
+res2 <- results(dds2, alpha = 0.05, lfcThreshold=log2(fc), contrast = c("sampleType", "Bad", "good") )
+
+
+library(edgeR)
+temp_cpm = cpm(raw_data)
+temp_cpm = temp_cpm[rownames(res2), ]
+temp_raw = raw_data[rownames(res2), ]
+colnames(temp_cpm) = paste0("cpm_", colnames(temp_cpm))
+colnames(temp_raw) = paste0("raw_", colnames(temp_raw))
+
+avg_per_group = cbind(rowMeans(temp_cpm[, which(coldata$sampleType=="Bad")]), 
+                      rowMeans(temp_cpm[, which(coldata$sampleType=="good")]) )
+colnames(avg_per_group) = c("Avg_Bad", "Avg_good")
+
+res2 = cbind(Gene = rownames(res2), res2[, c(2,5,6)], avg_per_group )
+res2 = as.data.frame(res2)
+up_reg = res2[which(res2$log2FoldChange > log2(fc)&  res2$padj < 0.05), ]
+down_reg = res2[which(res2$log2FoldChange < -log2(fc)&  res2$padj < 0.05), ] 
+nrow(up_reg) 
+nrow(down_reg) 
+
+up_reg = up_reg[order(up_reg$log2FoldChange , decreasing=T) , ]
+down_reg = down_reg[order(down_reg$log2FoldChange , decreasing=FALSE) , ]
+
+lst = list(all_DE_results = res2, up_reg_genes = up_reg, down_reg_genes = down_reg )
+write_xlsx(lst, path = paste0("Meningioma_Bad_vs_good_fc_",fc,"_fdr_0.05_4_18_2024.xlsx") )
+
+```
+
+
+## Volcano plot
+
+```{r}
+goi = read.delim(file.path(old_resdir, "YAP1_targets_harmonize.txt"), header=F, stringsAsFactors = F)[,1]
+length(goi) ## 2212
+pdf(paste0("YAP1_targets_harmonize_volcano_plot.pdf"), width = 10)
+res = res2
+m1 = round(max(res2$log2FoldChange)+0.5)
+with(res, plot(log2FoldChange, -log10(padj), xlim = c(-m1, m1),  cex = 0.5, 
+               pch=20, main="Volcano plot", col = "grey80"))
+with(subset(res, padj<.05 & log2FoldChange> log2(fc)), 
+     points(log2FoldChange, -log10(padj), pch=20, col="coral"))
+with(subset(res, padj<.05 & log2FoldChange < -log2(fc)), 
+     points(log2FoldChange, -log10(padj), pch=20, col="green"))
+with(res[match(goi, res$Gene), ], 
+     points(log2FoldChange, -log10(padj), pch=20, col="black"))
+dev.off()
+```
+
+## survival analysis 
+
+```{r}
+rm(list=ls())
+library(RColorBrewer)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+myPalette <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))
+
+sample_info <- readxl::read_xlsx("DAM_data_clinical_patient_v40_20230808a.xlsx", skip=5)
+sample_info <- sample_info[-1,]
+log2tpm  = readRDS(file.path( "batchcor_vstcounts_1298.rds"))
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(log2tpm))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% 
+    subset(., !(.$time_for_KM_final == "na"))
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "has_the_tumor_reccur")]
+colnames(time_rec) <- c("coordinate_ID", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec  = as.data.frame(timerec, stringsAsFactors=FALSE)
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+Bad <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterA_VST.csv", check.names = F, nrow = 10)
+Good  <- read.csv("RNASeq_norm_counts_by_cluster/Men_clusterB_VST.csv", check.names=F, nrow =10)
+bad_idx = na.omit(match(colnames(Bad), colnames(log2tpm)))
+good_idx = na.omit(match(colnames(Good), colnames(log2tpm)))
+bad_gene = log2tpm[, bad_idx]
+good_gene = log2tpm[, good_idx]
+my_data = cbind(bad_gene, good_gene)
+
+timerec = timerec[match(colnames(my_data), timerec[,1]), ]
+timerec$cluster = c(  rep("Bad", length(bad_idx)), rep("good", length(good_idx)) )
+sp = split(timerec, timerec$cluster)
+lapply(sp, function(x) table(is.na(x[,1])) )
+
+coldata = data.frame(sampleName = colnames(my_data), 
+                     sampleType = c(  rep("Bad", length(bad_idx)),
+                                      rep("good", length(good_idx)) ))
+
+## Survival analysis for both clusters
+mysurvdata  = data.frame(timerec, group = coldata$sampleType )
+mysurvdata$time = as.numeric( mysurvdata$time)
+fit1 <- surv_fit(Surv(time, status) ~ group, data = mysurvdata)
+
+p1 = ggsurvplot(fit1,   size = 1,palette =  c("orange", "#2E9FDF"),
+                conf.int = TRUE, pval = TRUE,  risk.table = TRUE,        
+                risk.table.col = "strata", legend.labs =c("Bad", "Good"),    
+                risk.table.height = 0.25,  ggtheme = theme_bw()      
+)+ ggtitle("using cluster A ( Bad) vs Cluster B (good)")
+
+pdf("survival_cluster_A_vs_clusterB.pdf", width = 10)
+print(p1)
+dev.off()
+
+## survival analysis based on gene expression. 
+
+gene_list = c("LATS1", "LATS2", "STK3", "STK4", "MOB1A", "MOB1B", "SAV1", "FAT1" , 
+              "FAT2",  "FAT3",  "FAT4", "FRMD6", "DCHS1", "DCHS2", "WWC1", 
+              "TAOK1", "TAOK2", "TAOK3", 
+              "TEAD1", "TEAD2", "TEAD3", "TEAD4",   
+              "VGLL3", "VGLL4", "NF2", "YAP1", "WWTR1",  
+              "CCN1", "CCN2",
+              "AMOT", "AMOTL2", "ANXA3", "ANKRD1")
+
+pdf("survival_analysis_chosen_genes_both_clusters.pdf")
+l1 = lapply(gene_list, function(goi){
+    message(goi)
+    gene_summary = as.numeric(summary(my_data[goi, ]))
+    
+    low_group= which(my_data[ goi, ] < gene_summary[2] )
+    high_group = which(my_data[goi, ]  > gene_summary[5])
+    want = c(low_group, high_group)
+    
+    mysurvdata  = data.frame(timerec[want, ], 
+                             group = c(rep("low", length(low_group)) , 
+                                       rep("high", length(high_group)) ) )
+    
+    mysurvdata$time = as.numeric( mysurvdata$time)
+    fit1 <- surv_fit(Surv(time, status) ~ group, data = mysurvdata)
+    
+    p3 = ggsurvplot(fit1, size = 1,  palette = c("orange", "#2E9FDF"),
+                    conf.int = TRUE,  pval = TRUE,            
+                    risk.table = TRUE,   risk.table.col = "strata",
+                    legend.labs =  c("High group", "Low Group"),    
+                    risk.table.height = 0.25, 
+                    ylab = "Recurrence-free Rate", xlab = "Time (months)",
+                    ggtheme = theme_bw()      
+    )+ ggtitle(paste0(goi, ":using less than1st quantile + more than 3rd quantile"))
+    print(p3)
+})
+dev.off()
+```
