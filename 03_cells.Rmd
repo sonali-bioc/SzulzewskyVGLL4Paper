@@ -1,0 +1,133 @@
+---
+title: "Analyzing data from Meningioma cells"
+author: "Sonali Arora"
+date: "August 26, 2024"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+Ben-Men-1 cells grown in DMEM (11995-073), 20% FBS, 1% PenStrep were 
+lentivirally transduced with pLJM1-GFP or pLJM1-VGLL4. RNASeq was 
+done on positive clones. We then performed gene expression profiling 
+analysis using data obtained from RNASeq of 3 GFP and 3 VGLL4 replicates
+
+Data for the meningioma cells has been deposited at GSE263122 and raw counts per 
+sample can be downloaded from the same. 
+
+```{r }
+rm(list=ls())
+library(DESeq2)
+library(edgeR)
+library(writexl)
+raw_data = readRDS("raw_data_19kgenes.Rds")
+
+coldata = data.frame(sampleName = colnames(raw_data), 
+                     sampleType = c(  rep("VGLL4", 2), rep("GFP", 3) , "VGLL4"))
+coldata$sampleType = factor(coldata$sampleType, levels = c("VGLL4" , "GFP"))
+
+
+rownames(coldata) = colnames(raw_data)
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData = raw_data, 
+                              colData = coldata, design = ~ sampleType)
+norm_data <- assay(rlog(dds))
+
+sampleDists <- dist( t( norm_data ) )
+sampleDistMatrix <- as.matrix( sampleDists )
+hc = hclust(sampleDists)
+
+mdsData <- data.frame(cmdscale(sampleDistMatrix))
+mds <- cbind(mdsData, as.data.frame(coldata))
+mds$sampleType = factor(mds$sampleType ,  levels = c("VGLL4", "GFP"))
+m1 <- ggplot(mds, aes(X1,X2,color=sampleType)) +
+    geom_point(size=4)+ theme_bw() +
+    ggtitle(paste0("MDS plot : ")) +
+    theme(plot.title = element_text(lineheight=.8, face="bold")) +
+    geom_text(aes(label=sampleName),hjust="inward", vjust=2, size=4)
+
+pc= prcomp(t(norm_data))
+pc_data1 = data.frame(PC1=pc$x[,1], PC2=pc$x[,2],
+                      sampleType=(coldata[,"sampleType"]) )
+percentVar <- (pc$sdev^2 / sum( pc$sdev^2 ) )*100
+percentVar= round(percentVar[1:2], 2)
+p1 = ggplot(pc_data1, aes(PC1, PC2, color=sampleType)) +
+    geom_point(size=4) +theme_bw() +
+    xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+    ylab(paste0("PC2: ",percentVar[2],"% variance"))+
+    ggtitle(paste0("PCA plot : ")) +
+    geom_text(aes(label=sampleName),hjust="inward", vjust=2, size=4)+
+    theme(plot.title = element_text(lineheight=.8, face="bold"))
+
+
+
+pdf(file.path( paste0("exploratory_plot.pdf")), width =10)
+plot(hc, main = paste0("Dendrogram"))
+print(m1)
+print(p1)
+dev.off()
+
+```
+
+
+## Differential expression analysis
+
+```{r}
+dds2 <- DESeqDataSetFromMatrix(countData = raw_data, 
+                              colData = coldata, design = ~ sampleType)
+dds2 <- estimateSizeFactors(dds2)
+
+t1 = apply(raw_data, 1, function(x)  length(which(x<=10)))
+idx = which(t1>3) 
+dds2 = dds2[-idx, ]
+dds2= DESeq(dds2)
+
+fc = 2
+test = "VGLL4" # bad ones overexpress VGLL4 - 
+res2 <- results(dds2, alpha = 0.05, lfcThreshold=log2(fc), 
+                contrast = c("sampleType", "VGLL4", "GFP"))
+
+temp_cpm = cpm(raw_data)
+temp_cpm = temp_cpm[rownames(res2), ]
+temp_raw = raw_data[rownames(res2), ]
+colnames(temp_cpm) = paste0("cpm_", colnames(temp_cpm))
+colnames(temp_raw) = paste0("raw_", colnames(temp_raw))
+
+res2 = cbind(Gene = rownames(res2), res2[, c(2,5,6)], temp_cpm, temp_raw)
+res2 = as.data.frame(res2)
+up_reg = res2[which(res2$log2FoldChange > log2(fc)&  res2$padj < 0.05), ]
+down_reg = res2[which(res2$log2FoldChange < -log2(fc)&  res2$padj < 0.05), ] 
+
+lst = list(all_DE_results = res2, up_reg_genes = up_reg, down_reg_genes = down_reg )
+write_xlsx(lst, path = paste0("VGLL4_vs_GFP_fc_",fc,"_fdr_0.05_12_1_2023.xlsx") )
+
+res2$Status = "Unchanged"
+res2$Status[ which(res2$padj<.05 & res2$log2FoldChange> log2(fc)) ] = "up-regulated"
+res2$Status[ which(res2$padj<.05 & res2$log2FoldChange < -log2(fc)) ] = "down-regulated"
+
+```
+
+## Volcano plot
+
+```{r}
+library(calibrate)
+
+goi = c("CTGF", "CYR61", "ANKRD1", "AMOTL2", "VGLL4")
+
+pdf(paste0("VOLCANO_PLOT_VGLL4_vs_GFP_fc_",fc,"_fdr_0.05_11_28_2023.pdf"), width = 10)
+res = res2[, c("Gene", "log2FoldChange" ,"pvalue", "padj", "Status")]
+m1 = round(max(res2$log2FoldChange)+0.5)
+with(res, plot(log2FoldChange, -log10(padj), xlim = c(-m1, m1),  cex = 0.5, 
+              pch=20, main="Volcano plot", col = "grey80"))
+with(subset(res, padj<.05 & log2FoldChange> log2(fc)), 
+     points(log2FoldChange, -log10(padj), pch=20, col="coral"))
+with(subset(res, padj<.05 & log2FoldChange < -log2(fc)), 
+     points(log2FoldChange, -log10(padj), pch=20, col="green"))
+with(res[match(goi, res$Gene), ], 
+     points(log2FoldChange, -log10(padj), pch=20, col="black"))
+with(res[match(goi, res$Gene), ], 
+     textxy(log2FoldChange, -log10(padj), labs=Gene, cex=.8))
+dev.off()
+
+```
