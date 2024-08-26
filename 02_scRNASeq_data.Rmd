@@ -1,0 +1,160 @@
+---
+title: "Analyzing scRNASeq data"
+author: "Sonali Arora"
+date: "August 26, 2024"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+
+```{r}
+
+library(monocle3)
+
+
+setwd("~/HollandLabShared/Nayanga/Meningioma_Felix_scRNAseq/SC MNG Heidelberg")
+mm = load_mm_data(mat_path = "counts_sparse_mtx.txt", feature_anno_path="gene_names.txt", cell_anno_path="cell_barcodes.txt")
+annotations = read.csv("barcode_annotation.csv", header=T)
+
+dat = exprs(mm)
+
+rm = which(is.na(annotations$sampleID))
+dat = dat[ , -c(match(rownames(annotations)[rm], colnames(dat)))]
+annotations = annotations[-rm, ]
+
+
+library(Seurat)
+
+full <- CreateSeuratObject(counts =  dat,  assay = "RNA", min.cells = 10)
+
+mito.genes <- grep("^MT", rownames(full))
+rb.genes <- grep("^RP", rownames(full))
+percent.mito <- Matrix::colSums(full@assays[["RNA"]][mito.genes, ])/Matrix::colSums(full@assays[["RNA"]])
+percent.rb <- Matrix::colSums(full@assays[["RNA"]][rb.genes, ])/Matrix::colSums(full@assays[["RNA"]])
+
+# add to meta.data
+full <- AddMetaData(full, percent.mito*100, col.name = "percent.mito")
+full <- AddMetaData(full, percent.rb*100, col.name = "percent.ribo")
+full <- AddMetaData(full,  annotations$percent.mt, col.name = "percent.mt")
+full <- AddMetaData(full, annotations$sampleID, col.name = "sampleID")
+full <- AddMetaData(full, annotations$MC, col.name = "MC")
+full <- AddMetaData(full, annotations$WHO, col.name = "WHO")
+full <- AddMetaData(full, annotations$batch, col.name = "batch")
+
+## remove batch 2 cells. 
+rm_cells = colnames(full)[which(full@meta.data$batch %in% "batch_2" )]
+table(is.na( match(rm_cells, colnames(full)) ))
+midx = match(rm_cells, colnames(full))
+seurat2 <- subset(full, cells=colnames(full)[-midx])
+
+# SEURAT PROCESSING. 
+seurat3 <- SCTransform(seurat2, vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mito"), verbose = FALSE)
+seurat3 <- RunPCA(seurat3, dims = 1:30)
+seurat3 <- RunUMAP(seurat3,   dims = 1:30)
+seurat3 <- FindNeighbors(seurat3,   dims = 1:30)
+seurat3 <- FindClusters(seurat3)
+
+# remove cells showing high expression of immune genes.
+lm22 = read.delim("LM22.txt", header=T, stringsAsFactors = FALSE, row.names=1, 
+                  check.names=FALSE)
+want = c("B cells naive","Plasma cells",
+"T cells CD8","T cells CD4 naive",
+"T cells regulatory (Tregs)","T cells gamma delta",
+"NK cells activated","Monocytes",
+"Macrophages M0","Macrophages M1","Macrophages M2",
+"Dendritic cells resting","Mast cells activated","Eosinophils","Neutrophils")
+lm22 = lm22[,match(want, colnames(lm22))]
+
+ test = apply(lm22, 2, function(x) {
+     goi = names(x[order(x, decreasing=T)])
+     goi = intersect(goi, rownames(seurat3))
+     head(goi, 4)
+ })
+ write.table(test, "top4_genes_lm22.txt", sep = "\t", quote=FALSE, row.names=FALSE, col.names =T)
+ geneName = unique(as.character(test))
+ geneName  = c(geneName, "PTPRC", "ITGAM", "CD3G", "CD4", "CD8A")
+ 
+ # extract counts
+ counts <- GetAssayData(seurat3, slot="counts", assay="RNA")   
+ # get counts for only top 4 genes
+ midx = match(geneName, rownames(counts))
+ test2=counts[midx, ]
+ cidx = apply(test2, 1, function(x) which(x >0))
+ 
+ rm_cells = unique(unlist(cidx))
+ coldata = seurat3@meta.data
+
+ # create new object after removing cells which have counts in immune marker genes. 
+ counts.sub <- counts[, -rm_cells]
+ new_coldata = coldata[-rm_cells, ]
+ new_seurat_object <- CreateSeuratObject(counts=counts.sub)
+ 
+ mito.genes <- grep("^MT", rownames(new_seurat_object))
+ rb.genes <- grep("^RP", rownames(new_seurat_object))
+ percent.mito <- Matrix::colSums(new_seurat_object@assays[["RNA"]][mito.genes, ])/Matrix::colSums(new_seurat_object@assays[["RNA"]])
+ percent.rb <- Matrix::colSums(new_seurat_object@assays[["RNA"]][rb.genes, ])/Matrix::colSums(new_seurat_object@assays[["RNA"]])
+ 
+ # add to meta.data
+ new_seurat_object <- AddMetaData(new_seurat_object, percent.mito*100, col.name = "percent.mito")
+ new_seurat_object <- AddMetaData(new_seurat_object, percent.rb*100, col.name = "percent.ribo")
+ new_seurat_object <- AddMetaData(new_seurat_object,  new_coldata$percent.mt, col.name = "percent.mt")
+ new_seurat_object <- AddMetaData(new_seurat_object, new_coldata$sampleID, col.name = "sampleID")
+ new_seurat_object <- AddMetaData(new_seurat_object, new_coldata$MC, col.name = "MC")
+ new_seurat_object <- AddMetaData(new_seurat_object,new_coldata$WHO, col.name = "WHO")
+ new_seurat_object <- AddMetaData(new_seurat_object, new_coldata$batch, col.name = "batch")
+ 
+ # SEURAT PROCESSING. 
+ seurat4 <- SCTransform(new_seurat_object, vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mito"), verbose = FALSE)
+ seurat4 <- RunPCA(seurat4, dims = 1:30)
+ seurat4 <- RunUMAP(seurat4,   dims = 1:30)
+ seurat4 <- FindNeighbors(seurat4,   dims = 1:30)
+ seurat4 <- FindClusters(seurat4)
+ 
+
+```
+
+## dotplot showing scRNASeq expression of hippo1 -yap1 pathway componenets in human meningioma tumor cells
+
+
+```{r}
+
+frank_goi1 = c("LATS1", "LATS2", "STK3", "STK4", "MOB1A", "MOB1B", "SAV1", "FAT1" , 
+              "FAT2",  "FAT3",  "FAT4", "FRMD6", "DCHS1", "DCHS2", "WWC1", 
+              "TAOK1", "TAOK2", "TAOK3", 
+              "TEAD1", "TEAD2", "TEAD3", "TEAD4",   
+              "VGLL3", "VGLL4")
+
+frank_goi2 = c( "NF2", "YAP1", "WWTR1",  
+              "CTGF", "CYR61", "AMOT", "AMOTL2", "ANKRD1")
+
+seurat4@active.ident = factor(seurat4@active.ident, 
+    levels = c( "mal", "int-B", "int-A","ben-2","ben-1"))
+
+pdf("dotplot_chosen_genes.pdf", width = 20, height = 5)
+DotPlot(object = seurat4, features = frank_goi1,  dot.scale = 10)
+DotPlot(object = seurat4, features = frank_goi2,  dot.scale = 10)
+dev.off()
+
+```
+
+
+# Violin plots showing expression of genes
+
+```{r}
+
+# CHECK EXPRESSION OF THOSE TOP GENES FOR EACH SAMPLE. 
+supp_table = read.delim("supp_table.txt", header=T, stringsAsFactors = FALSE)
+order_based_on_MC =supp_table[order(supp_table[,2]),  "sampleID"]
+order_based_on_WHO = supp_table[order(supp_table[,3]),"sampleID"]
+
+geneName = c("CTGF", "VGLL4" ,"FAT4")
+
+l2 = lapply(geneName, function(goi){
+    message(goi)
+    pdf(paste0("Violin_plot_gene_expression",goi,"_3_14_2023.pdf"), width = 10)
+    print(VlnPlot(object = seurat4, group.by="MC", features = goi))
+    dev.off()
+})
+```
